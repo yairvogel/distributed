@@ -1,69 +1,135 @@
 package main
 
 import (
+	"distributed/broadcast/hashset"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+type context struct {
+	node           *maelstrom.Node
+	messages       hashset.Hashset[int]
+	connectedNodes []string
+	mutex          sync.Mutex
+}
+
 func main() {
-	messages := hashset[int]{}
+	messages := hashset.Hashset[int]{}
 	node := maelstrom.NewNode()
+	context := context{node: node, messages: messages}
 
-	msgId := 1
-
-	node.Handle("broadcast", func(m maelstrom.Message) error {
-		body, err := unmarshalBody(m)
-		if err != nil {
-			return err
-		}
-
-		message, err := strconv.Atoi(fmt.Sprint(body["message"]))
-		if err != nil {
-			return err
-		}
-
-		messages.Add(message)
-
-		msgId += 1
-		body = map[string]any{
-			"msg_id": msgId,
-			"type":   "broadcast_ok",
-		}
-
-		return node.Reply(m, body)
-	})
-
-	node.Handle("topology", func(m maelstrom.Message) error {
-		body, err := unmarshalBody(m)
-		if err != nil {
-			return err
-		}
-
-		body = map[string]any{
-			"type": "topology_ok",
-		}
-
-		return node.Reply(m, body)
-	})
-
-	node.Handle("read", func(m maelstrom.Message) error {
-		msgId += 1
-		body := map[string]any{
-			"msg_id":   msgId,
-			"type":     "read_ok",
-			"messages": messages.Keys(),
-		}
-
-		return node.Reply(m, body)
-	})
+	context.handle("topology", handleTopology)
+	context.handle("broadcast", handleBroadcast)
+	context.handle("gossip", handleGossip)
+	context.handle("read", handleRead)
 
 	if err := node.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (c *context) handle(typ string, handler func(c_ *context, m maelstrom.Message) error) {
+	c.node.Handle(typ, func(m_ maelstrom.Message) error { return handler(c, m_) })
+}
+
+type TopologyMessageBody struct {
+	Type     string              `json:"type"`
+	Topology map[string][]string `json:"topology"`
+}
+
+func handleTopology(c *context, m maelstrom.Message) error {
+	var body TopologyMessageBody
+	if err := json.Unmarshal(m.Body, &body); err != nil {
+		return err
+	}
+
+	c.connectedNodes = shallowCopy(body.Topology[c.node.ID()])
+	log.Printf("connectedNodes: %v\n", c.connectedNodes)
+
+	return c.node.Reply(m, map[string]any{"type": "topology_ok"})
+}
+
+func handleBroadcast(c *context, m maelstrom.Message) error {
+	body, err := unmarshalBody(m)
+	if err != nil {
+		return err
+	}
+
+	message, err := strconv.Atoi(fmt.Sprint(body["message"]))
+	if err != nil {
+		return err
+	}
+
+	body = map[string]any{
+		"type":    "gossip",
+		"message": message,
+	}
+	log.Printf("gossip body from broadcast: %v\n", body)
+	log.Printf("connectedNodes: %v", c.connectedNodes)
+
+	c.mutex.Lock()
+	c.messages.Add(message)
+	c.mutex.Unlock()
+	for _, c_node := range c.connectedNodes {
+		log.Printf("sending message from broadcast to %v\n", c_node)
+		c.node.Send(c_node, body)
+	}
+
+	body = map[string]any{
+		"type": "broadcast_ok",
+	}
+
+	return c.node.Reply(m, body)
+}
+
+func handleGossip(c *context, m maelstrom.Message) error {
+	body, err := unmarshalBody(m)
+	if err != nil {
+		return err
+	}
+
+	message, err := strconv.Atoi(fmt.Sprint(body["message"]))
+	if err != nil {
+		return err
+	}
+
+	c.mutex.Lock()
+	if !c.messages.TryAdd(message) {
+		c.mutex.Unlock()
+		return nil
+	}
+	c.mutex.Unlock()
+
+	for _, c_node := range c.connectedNodes {
+		if c_node == m.Src {
+			continue
+		}
+
+		err := c.node.Send(c_node, body)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func handleRead(c *context, m maelstrom.Message) error {
+	c.mutex.Lock()
+	keys := c.messages.Keys()
+	c.mutex.Unlock()
+
+	body := map[string]any{
+		"type":     "read_ok",
+		"messages": keys,
+	}
+
+	return c.node.Reply(m, body)
 }
 
 func unmarshalBody(msg maelstrom.Message) (map[string]any, error) {
@@ -74,22 +140,8 @@ func unmarshalBody(msg maelstrom.Message) (map[string]any, error) {
 	return body, nil
 }
 
-type unit struct{}
-
-type hashset[I comparable] map[I]unit
-
-func (h hashset[I]) Add(item I) {
-	h[item] = unit{}
-}
-
-func (h hashset[I]) Keys() []I {
-	keys := make([]I, len(h))
-
-	i := 0
-	for k := range h {
-		keys[i] = k
-		i++
-	}
-
-	return keys
+func shallowCopy(src []string) []string {
+	dst := make([]string, len(src))
+	copy(dst, src)
+	return dst
 }
