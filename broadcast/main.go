@@ -6,22 +6,20 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 type context struct {
 	node           *maelstrom.Node
-	messages       hashset.Hashset[int]
+	messages       *hashset.Hashset[int]
 	connectedNodes []string
-	mutex          sync.Mutex
 }
 
 func main() {
-	messages := hashset.Hashset[int]{}
+	messages := hashset.New[int]()
 	node := maelstrom.NewNode()
-	context := context{node: node, messages: messages}
+	context := context{node: node, messages: &messages}
 
 	context.handle("topology", handleTopology)
 	context.handle("broadcast", handleBroadcast)
@@ -72,9 +70,7 @@ func handleBroadcast(c *context, m maelstrom.Message) error {
 	log.Printf("gossip body from broadcast: %v\n", body)
 	log.Printf("connectedNodes: %v", c.connectedNodes)
 
-	c.mutex.Lock()
 	c.messages.Add(message)
-	c.mutex.Unlock()
 	for _, c_node := range c.connectedNodes {
 		log.Printf("sending message from broadcast to %v\n", c_node)
 		c.node.Send(c_node, body)
@@ -98,12 +94,9 @@ func handleGossip(c *context, m maelstrom.Message) error {
 		return err
 	}
 
-	c.mutex.Lock()
 	if !c.messages.TryAdd(message) {
-		c.mutex.Unlock()
 		return nil
 	}
-	c.mutex.Unlock()
 
 	for _, c_node := range c.connectedNodes {
 		if c_node == m.Src {
@@ -120,9 +113,7 @@ func handleGossip(c *context, m maelstrom.Message) error {
 }
 
 func handleRead(c *context, m maelstrom.Message) error {
-	c.mutex.Lock()
 	keys := c.messages.Keys()
-	c.mutex.Unlock()
 
 	body := map[string]any{
 		"type":     "read_ok",

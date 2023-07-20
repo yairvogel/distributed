@@ -1,31 +1,51 @@
 package hashset
 
+import (
+	"sync"
+)
+
 type unit struct{}
 
-type Hashset[I comparable] map[I]unit
-
-func (h Hashset[I]) Add(item I) {
-	h[item] = unit{}
+// thread-safe hashset, implemented over map and locking
+type Hashset[I comparable] struct {
+	innerMap map[I]unit
+	mutex    sync.Mutex
 }
 
-func (h Hashset[I]) Keys() []I {
-	keys := make([]I, len(h))
+func New[I comparable]() Hashset[I] {
+	return Hashset[I]{innerMap: make(map[I]unit)}
+}
+
+func (h *Hashset[I]) Add(item I) {
+	h.mutex.Lock()
+	h.innerMap[item] = unit{}
+	h.mutex.Unlock()
+}
+
+func (h *Hashset[I]) Keys() []I {
+	keys := make([]I, len(h.innerMap))
+
+	h.mutex.Lock()
 
 	i := 0
-	for k := range h {
+	for k := range h.innerMap {
 		keys[i] = k
 		i++
 	}
 
+	h.mutex.Unlock()
 	return keys
 }
 
-func (h Hashset[I]) TryAdd(item I) bool {
-	_, hasKey := h[item]
+func (h *Hashset[I]) TryAdd(item I) bool {
+	h.mutex.Lock()
+
+	defer h.mutex.Unlock()
+	_, hasKey := h.innerMap[item]
 	if hasKey {
 		return false
 	}
 
-	h[item] = unit{}
+	h.innerMap[item] = unit{}
 	return true
 }
