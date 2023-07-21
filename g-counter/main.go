@@ -80,7 +80,7 @@ func handleAdd(m maelstrom.Message, context *Context) error {
 		return err
 	}
 
-	context.Counter.Incr(body.Delta)
+	context.Counter.Add(int(body.Delta))
 	context.MsgId++
 	context.Node.Reply(m, map[string]any{"type": "add_ok", "msg_id": context.MsgId})
 
