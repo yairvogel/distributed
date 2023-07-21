@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -16,15 +17,28 @@ type context struct {
 	connectedNodes []string
 }
 
+type TopologyMessageBody struct {
+	Type     string              `json:"type"`
+	Topology map[string][]string `json:"topology"`
+}
+
+type GossipMessageBody struct {
+	Type     string `json:"type"`
+	Messages []int  `json:"messages"`
+}
+
 func main() {
 	messages := hashset.New[int]()
 	node := maelstrom.NewNode()
-	context := context{node: node, messages: &messages}
+	context := context{node: node, messages: messages}
 
 	context.handle("topology", handleTopology)
 	context.handle("broadcast", handleBroadcast)
 	context.handle("gossip", handleGossip)
+	context.handle("gossip_ok", handleGossipOk)
 	context.handle("read", handleRead)
+
+	go tick(&context)
 
 	if err := node.Run(); err != nil {
 		log.Fatal(err)
@@ -35,11 +49,6 @@ func (c *context) handle(typ string, handler func(c_ *context, m maelstrom.Messa
 	c.node.Handle(typ, func(m_ maelstrom.Message) error { return handler(c, m_) })
 }
 
-type TopologyMessageBody struct {
-	Type     string              `json:"type"`
-	Topology map[string][]string `json:"topology"`
-}
-
 func handleTopology(c *context, m maelstrom.Message) error {
 	var body TopologyMessageBody
 	if err := json.Unmarshal(m.Body, &body); err != nil {
@@ -47,7 +56,6 @@ func handleTopology(c *context, m maelstrom.Message) error {
 	}
 
 	c.connectedNodes = shallowCopy(body.Topology[c.node.ID()])
-	log.Printf("connectedNodes: %v\n", c.connectedNodes)
 
 	return c.node.Reply(m, map[string]any{"type": "topology_ok"})
 }
@@ -63,57 +71,39 @@ func handleBroadcast(c *context, m maelstrom.Message) error {
 		return err
 	}
 
-	body = map[string]any{
-		"type":    "gossip",
-		"message": message,
-	}
-	log.Printf("gossip body from broadcast: %v\n", body)
-	log.Printf("connectedNodes: %v", c.connectedNodes)
-
 	c.messages.Add(message)
-	for _, c_node := range c.connectedNodes {
-		log.Printf("sending message from broadcast to %v\n", c_node)
-		c.node.Send(c_node, body)
-	}
 
-	body = map[string]any{
-		"type": "broadcast_ok",
-	}
-
-	return c.node.Reply(m, body)
+	return c.node.Reply(m, map[string]any{"type": "broadcast_ok"})
 }
 
 func handleGossip(c *context, m maelstrom.Message) error {
-	body, err := unmarshalBody(m)
-	if err != nil {
+	var body GossipMessageBody
+	if err := json.Unmarshal(m.Body, &body); err != nil {
 		return err
 	}
 
-	message, err := strconv.Atoi(fmt.Sprint(body["message"]))
-	if err != nil {
-		return err
-	}
+	responseMessages := c.messages.Difference(body.Messages)
+	c.messages.Union(body.Messages)
 
-	if !c.messages.TryAdd(message) {
-		return nil
-	}
-
-	for _, c_node := range c.connectedNodes {
-		if c_node == m.Src {
-			continue
-		}
-
-		err := c.node.Send(c_node, body)
-		if err != nil {
-			return err
-		}
+	if len(responseMessages) > 0 {
+		c.node.Reply(m, GossipMessageBody{Type: "gossip_ok", Messages: responseMessages})
 	}
 
 	return nil
 }
 
+func handleGossipOk(c *context, m maelstrom.Message) error {
+	var body GossipMessageBody
+	if err := json.Unmarshal(m.Body, &body); err != nil {
+		return err
+	}
+
+	c.messages.Union(body.Messages)
+	return nil
+}
+
 func handleRead(c *context, m maelstrom.Message) error {
-	keys := c.messages.Keys()
+	keys := c.messages.Items()
 
 	body := map[string]any{
 		"type":     "read_ok",
@@ -121,6 +111,17 @@ func handleRead(c *context, m maelstrom.Message) error {
 	}
 
 	return c.node.Reply(m, body)
+}
+
+func tick(c *context) {
+	for {
+		body := GossipMessageBody{Type: "gossip", Messages: c.messages.Items()}
+		for _, c_node := range c.connectedNodes {
+			c.node.Send(c_node, body)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func unmarshalBody(msg maelstrom.Message) (map[string]any, error) {
