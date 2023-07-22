@@ -13,7 +13,7 @@ import (
 
 type AddMessageBody struct {
 	Type  string `json:"type"`
-	Delta uint   `json:"delta"`
+	Delta int    `json:"delta"`
 }
 
 type MergeMessageBody struct {
@@ -80,7 +80,7 @@ func handleAdd(m maelstrom.Message, context *Context) error {
 		return err
 	}
 
-	context.Counter.Add(int(body.Delta))
+	context.Counter.Add(body.Delta)
 	context.MsgId++
 	context.Node.Reply(m, map[string]any{"type": "add_ok", "msg_id": context.MsgId})
 
