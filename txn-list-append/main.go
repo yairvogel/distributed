@@ -38,13 +38,19 @@ func handleTxn(m maelstrom.Message, c *Context) error {
 		return err
 	}
 
-	log.Printf("%v", body)
+	s := state.LoadState(c.Node)
+
+	t2, s2 := state.Transact(body.Txn, s, c.Node)
+
+	if err := state.SaveState(s, s2, c.Node); err != nil {
+		return err
+	}
 
 	res := map[string]any{
 		"type": "txn_ok",
-		"txn":  c.State.Transact(body.Txn),
+		"txn":  t2,
 	}
-	c.Node.Reply(m, res)
 
+	c.Node.Reply(m, res)
 	return nil
 }
