@@ -11,12 +11,12 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type AddMessageBody struct {
+type addMessageBody struct {
 	Type  string `json:"type"`
 	Delta int    `json:"delta"`
 }
 
-type MergeMessageBody struct {
+type mergeMessageBody struct {
 	Type      string `json:"type"`
 	State     []uint `json:"state"`
 	MsgId     int    `json:"msg_id"`
@@ -75,7 +75,7 @@ func handleRead(m maelstrom.Message, context *Context) error {
 }
 
 func handleAdd(m maelstrom.Message, context *Context) error {
-	var body AddMessageBody
+	var body addMessageBody
 	if err := json.Unmarshal(m.Body, &body); err != nil {
 		return err
 	}
@@ -88,14 +88,14 @@ func handleAdd(m maelstrom.Message, context *Context) error {
 }
 
 func handleMerge(m maelstrom.Message, context *Context) error {
-	var body MergeMessageBody
+	var body mergeMessageBody
 	if err := json.Unmarshal(m.Body, &body); err != nil {
 		return err
 	}
 
 	context.Counter.Merge(body.State)
 	context.MsgId++
-	context.Node.Send(m.Src, MergeMessageBody{
+	context.Node.Send(m.Src, mergeMessageBody{
 		Type:      "merge_ok",
 		State:     context.Counter.State(),
 		MsgId:     context.MsgId,
@@ -106,7 +106,7 @@ func handleMerge(m maelstrom.Message, context *Context) error {
 }
 
 func handleMergeOk(m maelstrom.Message, context *Context) error {
-	var body MergeMessageBody
+	var body mergeMessageBody
 	if err := json.Unmarshal(m.Body, &body); err != nil {
 		return err
 	}
@@ -140,5 +140,11 @@ func selectNode(node *maelstrom.Node) string {
 }
 
 func nodeId(id string) (int, error) {
-	return strconv.Atoi(id[1:])
+	// assuming that id is in format of "n1", "n2", etc. (1-based index)
+	res, err := strconv.Atoi(id[1:])
+	if err != nil {
+		return 0, err
+	}
+
+	return res - 1, nil
 }
